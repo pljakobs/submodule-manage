@@ -126,4 +126,4 @@ Commands like `remove` and `set-url` are designed to be atomic: they either succ
 
 ## License
 
-MIT
+GPL v3
