@@ -1,0 +1,523 @@
+#!/bin/bash
+
+# Git extension for managing submodule URLs and branches
+# Usage: git submodule-manage <command> [options]
+
+set -e
+
+SCRIPT_NAME="git submodule-manage"
+DO_COMMIT=false
+COMMIT_MSG=""
+
+commit_changes() {
+    local default_msg="$1"
+    shift
+    local files=("$@")
+    
+    if [ "$DO_COMMIT" = true ]; then
+        local msg="${COMMIT_MSG:-$default_msg}"
+        echo "Committing changes..."
+        git add "${files[@]}"
+        git commit -m "$msg"
+        echo "✅ Changes committed: '$msg'"
+    else
+        echo "Don't forget to commit the changes: git commit -m \"$default_msg\""
+    fi
+}
+
+show_help() {
+    cat << EOF
+$SCRIPT_NAME - Manage submodule URLs and branches
+
+USAGE:
+    git submodule-manage <command> [args] [--commit [message]]
+
+COMMANDS:
+    add <url> <path> [branch]             Add a new submodule, optionally tracking a branch
+    remove <submodule-dir>                Cleanly remove a submodule
+    update <submodule-dir>                Update submodule to latest remote commit
+    reset <submodule-dir>                 Reset submodule to the commit recorded in parent
+    diff <submodule-dir>                  Show commit summary between current and recorded state
+    shallow <submodule-dir> <depth>       Convert submodule to shallow clone
+    checkout <branch> <submodule-dir>     Switch submodule to specified branch
+    set-url <url> <submodule-dir>         Change the origin URL of submodule
+    add-remote <name> <url> <submodule>   Add additional remote to submodule
+    info <submodule-dir>                  Show submodule information
+    list                                  List all submodules
+
+OPTIONS:
+    --commit [msg]    Automatically add and commit changes to parent repo.
+                      If no message provided, a default one is used.
+
+EXAMPLES:
+    git submodule-manage add https://github.com/foo/bar libs/bar main --commit
+    git submodule-manage remove libs/bar --commit "Refactoring: remove bar"
+    git submodule-manage checkout fix/esp32-task Sming/Libraries/ConfigDB
+
+EOF
+}
+
+# Function to get the actual submodule name from .gitmodules
+get_submodule_name() {
+    local subdir="$1"
+    
+    # Try different approaches to find the submodule name
+    local name=""
+    
+    # Method 1: Direct grep approach
+    name=$(git config -f .gitmodules --get-regexp 'submodule\..*\.path' | grep " $subdir$" | head -1 | sed 's/^submodule\.\(.*\)\.path .*/\1/' || true)
+    echo "DEBUG: Method 1 result: '$name'" >&2
+    
+    if [ -z "$name" ]; then
+        # Method 2: Try without trailing slash
+        local subdir_clean="${subdir%/}"
+        name=$(git config -f .gitmodules --get-regexp 'submodule\..*\.path' | grep " $subdir_clean$" | head -1 | sed 's/^submodule\.\(.*\)\.path .*/\1/' || true)
+        echo "DEBUG: Method 2 result: '$name'" >&2
+    fi
+    
+    if [ -z "$name" ]; then
+        # Method 3: Try with trailing slash
+        local subdir_slash="${subdir}/"
+        name=$(git config -f .gitmodules --get-regexp 'submodule\..*\.path' | grep " $subdir_slash$" | head -1 | sed 's/^submodule\.\(.*\)\.path .*/\1/' || true)
+        echo "DEBUG: Method 3 result: '$name'" >&2
+    fi
+    
+    if [ -z "$name" ]; then
+        # Method 4: Manual parsing approach
+        echo "DEBUG: Trying manual parsing" >&2
+        while IFS= read -r line; do
+            echo "DEBUG: Processing line: '$line'" >&2
+            if [[ "$line" =~ submodule\.(.*)\.path[[:space:]]+(.*)$ ]]; then
+                local found_name="${BASH_REMATCH[1]}"
+                local found_path="${BASH_REMATCH[2]}"
+                echo "DEBUG: Found name='$found_name', path='$found_path'" >&2
+                if [ "$found_path" = "$subdir" ]; then
+                    name="$found_name"
+                    break
+                fi
+            fi
+        done < <(git config -f .gitmodules --get-regexp 'submodule\..*\.path')
+    fi
+    
+    if [ -n "$name" ]; then
+        echo "$name"
+    else
+        echo "DEBUG: No match found, using path as fallback" >&2
+        echo "$subdir"
+    fi
+}
+
+validate_submodule() {
+    local subdir="$1"
+    if [ ! -d "$subdir" ]; then
+        echo "Error: Directory '$subdir' does not exist"
+        exit 1
+    fi
+    
+    if [ ! -f "$subdir/.git" ] && [ ! -d "$subdir/.git" ]; then
+        echo "Error: '$subdir' is not a git repository"
+        exit 1
+    fi
+    
+    # Check if it's actually a submodule
+    if ! git submodule status "$subdir" > /dev/null 2>&1; then
+        echo "Warning: '$subdir' exists but is not registered as a submodule"
+    fi
+}
+
+add_submodule() {
+    local url="$1"
+    local subdir="$2"
+    local branch="$3"
+    
+    echo "Adding submodule '$subdir' from '$url'..."
+    
+    if [ -d "$subdir" ]; then
+         echo "Error: Directory '$subdir' already exists"
+         exit 1
+    fi
+    
+    git submodule add "$url" "$subdir"
+    
+    if [ -n "$branch" ]; then
+        echo "Configuring to track branch '$branch'..."
+        local submodule_name=$(get_submodule_name "$subdir")
+        git config -f .gitmodules "submodule.$submodule_name.branch" "$branch"
+    fi
+    
+    echo "✅ Successfully added submodule '$subdir'"
+    commit_changes "Add submodule $subdir" .gitmodules "$subdir"
+}
+
+remove_submodule() {
+    local subdir="$1"
+    
+    echo "Removing submodule '$subdir'..."
+    
+    validate_submodule "$subdir"
+    
+    # Get the actual submodule name
+    local submodule_name=$(get_submodule_name "$subdir")
+
+    echo "De-initializing submodule..."
+    git submodule deinit -f -- "$subdir"
+    
+    echo "Removing from .git/modules..."
+    rm -rf ".git/modules/$submodule_name"
+    
+    echo "Removing from git..."
+    git rm -f "$subdir"
+    
+    echo "✅ Successfully removed submodule '$subdir'"
+    commit_changes "Remove submodule $subdir" .gitmodules
+}
+
+update_submodule() {
+    local subdir="$1"
+    
+    echo "Updating submodule '$subdir'..."
+    
+    validate_submodule "$subdir"
+    
+    # Update with remote
+    git submodule update --remote --merge "$subdir"
+    
+    echo "✅ Successfully updated submodule '$subdir'"
+    commit_changes "Update submodule $subdir" "$subdir"
+}
+
+reset_submodule() {
+    local subdir="$1"
+    
+    echo "Resetting submodule '$subdir'..."
+    
+    validate_submodule "$subdir"
+    
+    git submodule update --init --force --checkout "$subdir"
+    
+    echo "✅ Successfully reset submodule '$subdir'"
+    # Reset usually restores clean state to match parent commit, implying no change to parent.
+    # However, if parent index was anticipating a change that we are reverting, we might want to commit?
+    # No, typically 'reset' means "discard local changes", so matching parent.
+    # But if we want to "reset submodule to its HEAD and commit that to parent" (like update), that's different.
+    # The current 'reset' implementation does `git submodule update --init --force --checkout`.
+    # This aligns the submodule worktree with the PARENT commit.
+    # So there is nothing new to commit to parent.
+}
+
+diff_submodule() {
+    local subdir="$1"
+    
+    validate_submodule "$subdir"
+    
+    echo "Diff for submodule '$subdir':"
+    git diff --submodule=log "$subdir"
+}
+
+shallow_submodule() {
+    local subdir="$1"
+    local depth="$2"
+    
+    echo "Converting submodule '$subdir' to shallow clone (depth $depth)..."
+    
+    validate_submodule "$subdir"
+    
+    git submodule deinit -f "$subdir"
+    git submodule update --init --depth "$depth" "$subdir"
+    
+    echo "✅ Successfully converted '$subdir' to shallow clone"
+}
+
+checkout_branch() {
+    local branch="$1"
+    local subdir="$2"
+    
+    echo "Switching submodule '$subdir' to branch '$branch'"
+    
+    validate_submodule "$subdir"
+    
+    cd "$subdir"
+    
+    # Fetch all branches
+    echo "Fetching all branches..."
+    git fetch --all
+    
+    # Checkout the branch
+    echo "Checking out branch '$branch'..."
+    git checkout "$branch"
+    
+    # If it's a remote branch, set up tracking
+    if git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+        git branch --set-upstream-to="origin/$branch" "$branch" 2>/dev/null || true
+    fi
+    
+    cd - > /dev/null
+    
+    # Get the actual submodule name
+    local submodule_name=$(get_submodule_name "$subdir")
+    
+    # Update .gitmodules to track this branch
+    echo "Updating .gitmodules to track branch '$branch'..."
+    git config -f .gitmodules "submodule.$submodule_name.branch" "$branch"
+    
+    # Update the parent repository
+    echo "Updating parent repository..."
+    # git add "$subdir" .gitmodules <-- handled by commit_changes now
+    
+    echo "✅ Successfully switched '$subdir' to branch '$branch'"
+    commit_changes "Update $subdir to branch $branch" "$subdir" .gitmodules
+}
+
+set_url() {
+    local url="$1"
+    local subdir="$2"
+    
+    echo "Setting URL for submodule '$subdir' to '$url'"
+    
+    validate_submodule "$subdir"
+    
+    # Get the actual submodule name
+    local submodule_name=$(get_submodule_name "$subdir")
+    
+    # Update .gitmodules
+    echo "Updating .gitmodules..."
+    git config -f .gitmodules "submodule.$submodule_name.url" "$url"
+    
+    # Update submodule's origin
+    echo "Updating submodule's remote origin..."
+    cd "$subdir"
+    git remote set-url origin "$url"
+    cd - > /dev/null
+    
+    # Sync the changes
+    echo "Syncing submodule..."
+    git submodule sync "$subdir"
+    
+    echo "✅ Successfully updated URL for '$subdir'"
+    commit_changes "Update $subdir URL to $url" .gitmodules
+}
+
+add_remote() {
+    local name="$1"
+    local url="$2"
+    local subdir="$3"
+    
+    echo "Adding remote '$name' with URL '$url' to submodule '$subdir'"
+    
+    validate_submodule "$subdir"
+    
+    cd "$subdir"
+    
+    # Check if remote already exists
+    if git remote get-url "$name" > /dev/null 2>&1; then
+        echo "Remote '$name' already exists. Updating URL..."
+        git remote set-url "$name" "$url"
+    else
+        echo "Adding new remote '$name'..."
+        git remote add "$name" "$url"
+    fi
+    
+    # Fetch from new remote
+    echo "Fetching from remote '$name'..."
+    git fetch "$name"
+    
+    cd - > /dev/null
+    
+    echo "✅ Successfully added/updated remote '$name' for '$subdir'"
+}
+
+show_info() {
+    local subdir="$1"
+    
+    validate_submodule "$subdir"
+    
+    echo "=== Submodule Information: $subdir ==="
+    echo
+    
+    # Get the actual submodule name
+    local submodule_name=$(get_submodule_name "$subdir")
+    
+    # Show .gitmodules info
+    echo "📁 .gitmodules configuration:"
+    echo "   Submodule name: $submodule_name"
+    echo "   URL: $(git config -f .gitmodules submodule.$submodule_name.url 2>/dev/null || echo "Not set")"
+    echo "   Branch: $(git config -f .gitmodules submodule.$submodule_name.branch 2>/dev/null || echo "Not set")"
+    echo
+    
+    # Show current status
+    echo "📊 Current status:"
+    git submodule status "$subdir"
+    echo
+    
+    # Show submodule's git info
+    echo "🔍 Git information:"
+    cd "$subdir"
+    echo "   Current branch: $(git branch --show-current 2>/dev/null || echo "Detached HEAD")"
+    echo "   Current commit: $(git rev-parse --short HEAD)"
+    echo "   Current commit message: $(git log -1 --pretty=format:'%s')"
+    echo
+    
+    echo "🌐 Remotes:"
+    git remote -v
+    
+    cd - > /dev/null
+}
+
+list_submodules() {
+    echo "=== All Submodules ==="
+    echo
+    
+    if [ ! -f .gitmodules ]; then
+        echo "No submodules found (no .gitmodules file)"
+        return
+    fi
+    
+    git submodule foreach --quiet 'echo "📁 $name ($sha1)"'
+    echo
+    
+    echo "=== Submodule Status ==="
+    git submodule status
+}
+
+# Helper to parse commit options
+parse_common_options() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --commit)
+                DO_COMMIT=true
+                if [ -n "$2" ] && [[ "$2" != -* ]]; then
+                    COMMIT_MSG="$2"
+                    shift
+                fi
+                shift
+                ;;
+            *)
+                echo "Warning: Unknown argument '$1' ignored"
+                shift
+                ;;
+        esac
+    done
+}
+
+# Main script logic
+case "$1" in
+    "add")
+        if [ $# -lt 3 ]; then
+            echo "Error: add requires URL and submodule directory"
+            echo "Usage: git submodule-manage add <url> <submodule-dir> [branch] [--commit [msg]]"
+            exit 1
+        fi
+        
+        # Parse based on args count/type to distinguish branch from commit
+        url="$2"
+        dir="$3"
+        branch=""
+        shift 3
+        
+        if [ -n "$1" ] && [[ "$1" != --* ]]; then
+            branch="$1"
+            shift
+        fi
+        
+        parse_common_options "$@"
+        add_submodule "$url" "$dir" "$branch"
+        ;;
+    "remove")
+        if [ $# -lt 2 ]; then
+            echo "Error: remove requires submodule directory"
+            echo "Usage: git submodule-manage remove <submodule-dir> [--commit [msg]]"
+            exit 1
+        fi
+        dir="$2"
+        shift 2
+        parse_common_options "$@"
+        remove_submodule "$dir"
+        ;;
+    "update")
+        if [ $# -lt 2 ]; then
+            echo "Error: update requires submodule directory"
+            echo "Usage: git submodule-manage update <submodule-dir> [--commit [msg]]"
+            exit 1
+        fi
+        dir="$2"
+        shift 2
+        parse_common_options "$@"
+        update_submodule "$dir"
+        ;;
+    "reset")
+        if [ $# -ne 2 ]; then
+            echo "Error: reset requires submodule directory"
+            echo "Usage: git submodule-manage reset <submodule-dir>"
+            exit 1
+        fi
+        reset_submodule "$2"
+        ;;
+    "diff")
+        if [ $# -ne 2 ]; then
+            echo "Error: diff requires submodule directory"
+            echo "Usage: git submodule-manage diff <submodule-dir>"
+            exit 1
+        fi
+        diff_submodule "$2"
+        ;;
+    "shallow")
+        if [ $# -ne 3 ]; then
+            echo "Error: shallow requires submodule directory and depth"
+            echo "Usage: git submodule-manage shallow <submodule-dir> <depth>"
+            exit 1
+        fi
+        shallow_submodule "$2" "$3"
+        ;;
+    "checkout")
+        if [ $# -lt 3 ]; then
+            echo "Error: checkout requires branch and submodule directory"
+            echo "Usage: git submodule-manage checkout <branch> <submodule-dir> [--commit [msg]]"
+            exit 1
+        fi
+        branch="$2"
+        dir="$3"
+        shift 3
+        parse_common_options "$@"
+        checkout_branch "$branch" "$dir"
+        ;;
+    "set-url")
+        if [ $# -lt 3 ]; then
+            echo "Error: set-url requires URL and submodule directory"
+            echo "Usage: git submodule-manage set-url <url> <submodule-dir> [--commit [msg]]"
+            exit 1
+        fi
+        url="$2"
+        dir="$3"
+        shift 3
+        parse_common_options "$@"
+        set_url "$url" "$dir"
+        ;;
+    "add-remote")
+        if [ $# -ne 4 ]; then
+            echo "Error: add-remote requires name, URL, and submodule directory"
+            echo "Usage: git submodule-manage add-remote <name> <url> <submodule-dir>"
+            exit 1
+        fi
+        add_remote "$2" "$3" "$4"
+        ;;
+    "info")
+        if [ $# -ne 2 ]; then
+            echo "Error: info requires submodule directory"
+            echo "Usage: git submodule-manage info <submodule-dir>"
+            exit 1
+        fi
+        show_info "$2"
+        ;;
+    "list")
+        list_submodules
+        ;;
+    "-h"|"--help"|"help")
+        show_help
+        ;;
+    *)
+        echo "Error: Unknown command '$1'"
+        echo
+        show_help
+        exit 1
+        ;;
+esac

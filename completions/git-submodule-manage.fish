@@ -1,0 +1,36 @@
+# Fish completion for git-submodule-manage
+# Copy this file to ~/.config/fish/completions/git-submodule-manage.fish
+
+function __fish_git_submodule_manage_submodules
+    # Fetch submodules from .gitmodules instead of status
+    git config -f .gitmodules --get-regexp path 2>/dev/null | awk '{print $2}'
+end
+
+# Register the submodule-manage command with git (if not already done by standard completions)
+
+set -l subcommands add remove update reset diff shallow checkout set-url add-remote info list
+
+# Complete subcommands - only show if no subcommand used yet
+complete -f -c git -n '__fish_git_using_command submodule-manage; and not __fish_seen_subcommand_from $subcommands' -a "$subcommands"
+
+# Submodule completion helper
+# For commands where submodule is the first argument
+set -l direct_submod_cmds remove update reset diff info shallow
+complete -f -c git -n "__fish_git_using_command submodule-manage; and __fish_seen_subcommand_from $direct_submod_cmds" -a "(__fish_git_submodule_manage_submodules)"
+
+# Add --commit flag for modifying commands
+set -l modifying_cmds add remove update checkout set-url
+complete -f -c git -n "__fish_git_using_command submodule-manage; and __fish_seen_subcommand_from $modifying_cmds" -l commit -d "Automatically commit changes"
+
+# checkout <branch> <submodule>
+# Argument 1 is branch (arbitrary string or git refs?), Argument 2 is submodule
+# We complete submodule if we have at least 1 token after checkout
+complete -f -c git -n '__fish_git_using_command submodule-manage; and __fish_seen_subcommand_from checkout; and __fish_is_nth_token 4' -a "(__fish_git_submodule_manage_submodules)"
+
+# set-url <url> <submodule>
+# url is token 3, submodule is token 4
+complete -f -c git -n '__fish_git_using_command submodule-manage; and __fish_seen_subcommand_from set-url; and __fish_is_nth_token 4' -a "(__fish_git_submodule_manage_submodules)"
+
+# add-remote <name> <url> <submodule>
+# name=3, url=4, submod=5
+complete -f -c git -n '__fish_git_using_command submodule-manage; and __fish_seen_subcommand_from add-remote; and __fish_is_nth_token 5' -a "(__fish_git_submodule_manage_submodules)"
