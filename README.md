@@ -105,6 +105,13 @@ Shows detailed information about the submodule: current branch, configured remot
 git submodule-manage info libs/bar
 ```
 
+**`inspect [path]`**
+Diagnoses issues with a submodule (or all if path is omitted or via `--all`). Run with `--fix` to automatically repair common issues like URL mismatches or uninitialized states.
+```bash
+git submodule-manage inspect --all
+git submodule-manage inspect libs/bar --fix
+```
+
 **`diff <path>`**
 Shows the commit log of changes between the currently checked out version of the submodule and the version recorded in the parent repo.
 ```bash

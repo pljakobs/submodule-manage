@@ -3,20 +3,28 @@
 
 function __fish_git_submodule_manage_submodules
     # Fetch submodules from .gitmodules instead of status
-    git config -f .gitmodules --get-regexp path 2>/dev/null | awk '{print $2}'
+    git config -f .gitmodules --get-regexp path 2>/dev/null | awk '{print $2}' | while read -l path
+         set -l name (basename $path)
+         echo -e "$path\t$name"
+    end
 end
 
 # Register the submodule-manage command with git (if not already done by standard completions)
 
-set -l subcommands add remove update reset diff shallow checkout set-url add-remote info list
+set -l subcommands add remove update reset diff shallow checkout set-url add-remote info inspect list
 
 # Complete subcommands - only show if no subcommand used yet
 complete -f -c git -n '__fish_git_using_command submodule-manage; and not __fish_seen_subcommand_from $subcommands' -a "$subcommands"
 
 # Submodule completion helper
 # For commands where submodule is the first argument
-set -l direct_submod_cmds remove update reset diff info shallow
+set -l direct_submod_cmds remove update reset diff info inspect shallow
 complete -f -c git -n "__fish_git_using_command submodule-manage; and __fish_seen_subcommand_from $direct_submod_cmds" -a "(__fish_git_submodule_manage_submodules)"
+
+# Add flags for inspect/info
+complete -f -c git -n '__fish_git_using_command submodule-manage; and __fish_seen_subcommand_from inspect info' -l all -d "Apply to all submodules"
+complete -f -c git -n '__fish_git_using_command submodule-manage; and __fish_seen_subcommand_from inspect info' -l recursive -d "Apply recursively"
+complete -f -c git -n '__fish_git_using_command submodule-manage; and __fish_seen_subcommand_from inspect' -l fix -d "Attempt to fix issues"
 
 # Add --commit flag for modifying commands
 set -l modifying_cmds add remove update checkout set-url

@@ -10,6 +10,9 @@ DO_COMMIT=false
 COMMIT_MSG=""
 DRY_RUN=false
 FORCE=false
+DO_FIX=false
+DO_ALL=false
+DO_RECURSIVE=false
 
 # Helper function to execute commands respecting DRY_RUN
 run_cmd() {
@@ -83,13 +86,17 @@ COMMANDS:
     checkout <branch> <submodule-dir>     Switch submodule to specified branch
     set-url <url> <submodule-dir>         Change the origin URL of submodule
     add-remote <name> <url> <submodule>   Add additional remote to submodule
-    info <submodule-dir>                  Show submodule information
+    info [submodule-dir]                  Show submodule information
+    inspect [submodule-dir]               Inspect submodules for issues (use --fix to repair)
     list                                  List all submodules
 
 OPTIONS:
     --commit [msg]    Automatically add and commit changes to parent repo.
     --dry-run, -n     Show what would be done without making changes.
     --force, -f       Force operation (e.g. overwrite dirty submodules).
+    --fix             Apply fixes during inspection.
+    --all             Apply to all defined submodules (for info/inspect).
+    --recursive       Apply recursively (for info/inspect).
 
 EXAMPLES:
     git submodule-manage add https://github.com/foo/bar libs/bar main --commit
@@ -386,38 +393,69 @@ add_remote() {
 show_info() {
     local subdir="$1"
     
-    validate_submodule "$subdir"
+    # If no subdirectory provided, treat as 'all' if --all or --recursive is set
+    # Or iterate over all. 
+    # Logic in main case statement passes "" if no arg?
+    # Actually main case logic checks arg count.
     
-    echo "=== Submodule Information: $subdir ==="
-    echo
-    
-    # Get the actual submodule name
-    local submodule_name=$(get_submodule_name "$subdir")
-    
-    # Show .gitmodules info
-    echo "📁 .gitmodules configuration:"
-    echo "   Submodule name: $submodule_name"
-    echo "   URL: $(git config -f .gitmodules submodule.$submodule_name.url 2>/dev/null || echo "Not set")"
-    echo "   Branch: $(git config -f .gitmodules submodule.$submodule_name.branch 2>/dev/null || echo "Not set")"
-    echo
-    
-    # Show current status
-    echo "📊 Current status:"
-    git submodule status "$subdir"
-    echo
-    
-    # Show submodule's git info
-    echo "🔍 Git information:"
-    cd "$subdir"
-    echo "   Current branch: $(git branch --show-current 2>/dev/null || echo "Detached HEAD")"
-    echo "   Current commit: $(git rev-parse --short HEAD)"
-    echo "   Current commit message: $(git log -1 --pretty=format:'%s')"
-    echo
-    
-    echo "🌐 Remotes:"
-    git remote -v
-    
-    cd - > /dev/null
+    if [ -n "$subdir" ]; then
+        validate_submodule "$subdir"
+        
+        echo "=== Submodule Information: $subdir ==="
+        echo
+        
+        # Get the actual submodule name
+        local submodule_name=$(get_submodule_name "$subdir")
+        
+        # Show .gitmodules info
+        echo "📁 .gitmodules configuration:"
+        echo "   Submodule name: $submodule_name"
+        echo "   URL: $(git config -f .gitmodules submodule.$submodule_name.url 2>/dev/null || echo "Not set")"
+        echo "   Branch: $(git config -f .gitmodules submodule.$submodule_name.branch 2>/dev/null || echo "Not set")"
+        echo
+        
+        # Show current status
+        echo "📊 Current status:"
+        git submodule status "$subdir"
+        echo
+        
+        # Show submodule's git info
+        echo "🔍 Git information:"
+        cd "$subdir"
+        echo "   Current branch: $(git branch --show-current 2>/dev/null || echo "Detached HEAD")"
+        echo "   Current commit: $(git rev-parse --short HEAD)"
+        echo "   Current commit message: $(git log -1 --pretty=format:'%s')"
+        echo
+        
+        echo "🌐 Remotes:"
+        git remote -v
+        
+        cd - > /dev/null
+    else 
+        # Iterate based on context
+        local recursive_flag=""
+        if [ "$DO_RECURSIVE" = true ]; then
+            recursive_flag="--recursive"
+        fi
+        
+        if [ "$DO_ALL" = true ] || [ "$DO_RECURSIVE" = true ]; then
+             echo "=== All Submodules Information ==="
+             if [ -n "$recursive_flag" ]; then
+                 git submodule status $recursive_flag | awk '{print $2}' | while read -r path; do
+                     echo "----------------------------------------"
+                     show_info "$path"
+                 done
+             else
+                 git config -f .gitmodules --get-regexp path | awk '{print $2}' | while read -r path; do
+                     echo "----------------------------------------"
+                     show_info "$path"
+                 done
+             fi
+        else
+             echo "Error: Directory required or use --all / --recursive"
+             exit 1
+        fi
+    fi
 }
 
 list_submodules() {
@@ -435,6 +473,160 @@ list_submodules() {
     echo "=== Submodule Status ==="
     git submodule status
 }
+
+inspect_single() {
+    local subdir="$1"
+    echo "Inspecting '$subdir'..."
+    
+    if [ ! -d "$subdir" ]; then
+        echo "❌ Directory missing."
+        if [ "$DO_FIX" = true ]; then
+            echo "🔧 Fixing: Expected submodule directory missing..."
+            run_cmd "git submodule update --init \"$subdir\""
+            return
+        else
+            echo "   Suggestion: git submodule update --init \"$subdir\" (Initializes and clones the submodule)"
+            return
+        fi
+    fi
+    
+    local name=$(get_submodule_name "$subdir")
+    local issues=0
+    
+    # 1. Check URL Mismatch
+    local url_mod=$(git config -f .gitmodules submodule.$name.url || echo "")
+    local url_local=$(cd "$subdir" && git remote get-url origin 2>/dev/null || echo "")
+    
+    # Sometimes urls differ by .git suffix or trailing slash, simplistic check
+    if [ "$url_mod" != "$url_local" ]; then
+        echo "⚠️  URL mismatch:"
+        echo "   .gitmodules:  $url_mod"
+        echo "   Local origin: $url_local"
+        if [ "$DO_FIX" = true ]; then
+             echo "🔧 Fixing: Syncing submodule URL..."
+             run_cmd "git submodule sync \"$subdir\""
+             # Refresh local url
+             url_local=$(cd "$subdir" && git remote get-url origin 2>/dev/null || echo "")
+        else
+             echo "   Suggestion: git submodule sync \"$subdir\" (Syncs local remote URL with .gitmodules)"
+             issues=$((issues + 1))
+        fi
+    fi
+    
+    # 2. Check Branch Mismatch
+    local branch_mod=$(git config -f .gitmodules submodule.$name.branch || echo "")
+    local branch_local=$(cd "$subdir" && git branch --show-current 2>/dev/null || echo "")
+    
+    if [ -n "$branch_mod" ]; then
+        if [ "$branch_local" != "$branch_mod" ]; then
+             echo "⚠️  Branch mismatch:"
+             echo "   .gitmodules configured branch: '$branch_mod'"
+             echo "   Current checked out branch:    '${branch_local:-Detached HEAD}'"
+             if [ "$DO_FIX" = true ]; then
+                 echo "🔧 Fixing: Checking out branch '$branch_mod'..."
+                 # Run in subshell to avoid changing directory for main script
+                 (cd "$subdir" && run_cmd "git checkout \"$branch_mod\"")
+             else
+                 echo "   Suggestion: git submodule-manage checkout \"$branch_mod\" \"$subdir\" (Switches to configured branch)"
+                 issues=$((issues + 1))
+             fi
+        fi
+    fi
+    
+    # 3. Check Commit Status
+    local status_line=$(git submodule status "$subdir")
+    local status_char="${status_line:0:1}"
+    
+    if [ "$status_char" = "+" ]; then
+        echo "⚠️  Commit mismatch (Parent index vs Submodule HEAD):"
+        echo "   The submodule is on a different commit than recorded in the parent."
+        if [ "$DO_FIX" = true ]; then
+             # Ambiguous what "fix" means here. Usually "update submodule to match parent".
+             echo "🔧 Fixing: Updating submodule to match parent commit..."
+             run_cmd "git submodule update \"$subdir\""
+        else
+             echo "   Suggestion 1 (Update submodule): git submodule-manage update \"$subdir\" (Discards local changes, resets to parent's commit)"
+             echo "   Suggestion 2 (Update parent):    git add \"$subdir\" (Records current submodule commit in parent)"
+             issues=$((issues + 1))
+        fi
+    elif [ "$status_char" = "-" ]; then
+        echo "❌ Submodule not initialized"
+        if [ "$DO_FIX" = true ]; then
+             echo "🔧 Fixing: Initializing submodule..."
+             run_cmd "git submodule update --init \"$subdir\""
+        else
+             echo "   Suggestion: git submodule update --init \"$subdir\" (Initializes the submodule)"
+             issues=$((issues + 1))
+        fi
+    elif [ "$status_char" = "U" ]; then
+        echo "❌ Merge conflicts in submodule reference"
+        echo "   Manual intervention required for merge conflicts."
+        issues=$((issues + 1))
+    fi
+    
+    # 4. Check Dirty State
+    if ! (cd "$subdir" && git diff --quiet) || ! (cd "$subdir" && git diff --cached --quiet); then
+        echo "⚠️  Dirty worktree (Uncommitted changes):"
+        echo "   The submodule has local modifications."
+        echo "   Suggestion: cd \"$subdir\" && git status (Inspect local changes)"
+        issues=$((issues + 1))
+    fi
+    
+    if [ $issues -eq 0 ]; then
+        echo "✅ Everything looks good."
+    elif [ "$DO_FIX" = true ]; then
+        echo "✅ Fixes applied where possible."
+    else
+        echo "Found $issues issue(s)."
+    fi
+}
+
+show_inspect() {
+    local subdir="$1"
+    
+    if [ -n "$subdir" ]; then
+        inspect_single "$subdir"
+    else
+        local recursive_flag=""
+        if [ "$DO_RECURSIVE" = true ]; then
+            recursive_flag="--recursive"
+        fi
+        
+        echo "=== Inspecting Submodules ==="
+        
+        if [ "$DO_ALL" = true ] || [ "$DO_RECURSIVE" = true ]; then
+             if [ -n "$recursive_flag" ]; then
+                 # Use submodule status for recursive traversal
+                 git submodule status $recursive_flag | awk '{print $2}' | while read -r path; do
+                     echo "----------------------------------------"
+                     inspect_single "$path"
+                 done
+             else
+                 # Use .gitmodules for all top-level defined submodules
+                 if [ ! -f .gitmodules ]; then
+                     echo "No .gitmodules found."
+                     return
+                 fi
+                 git config -f .gitmodules --get-regexp path | awk '{print $2}' | while read -r path; do
+                     echo "----------------------------------------"
+                     inspect_single "$path"
+                 done
+             fi
+        else
+            # Default behavior: Inspect configured submodules (non-recursive)
+            if [ ! -f .gitmodules ]; then
+                 echo "No .gitmodules found."
+                 return
+            fi
+            git config -f .gitmodules --get-regexp path | awk '{print $2}' | while read -r path; do
+                echo "----------------------------------------"
+                inspect_single "$path"
+            done
+        fi
+        echo "----------------------------------------"
+    fi
+}
+
 
 # Helper to parse common options and set flags
 parse_common_options() {
@@ -457,6 +649,18 @@ parse_common_options() {
                 ;;
             --force|-f)
                 FORCE=true
+                shift
+                ;;
+            --fix)
+                DO_FIX=true
+                shift
+                ;;
+            --all)
+                DO_ALL=true
+                shift
+                ;;
+            --recursive)
+                DO_RECURSIVE=true
                 shift
                 ;;
             *)
@@ -550,12 +754,12 @@ case "$COMMAND" in
         add_remote "$1" "$2" "$3"
         ;;
     "info")
-        if [ $# -lt 1 ]; then
-            echo "Error: info requires submodule directory"
-            echo "Usage: git submodule-manage info <submodule-dir>"
-            exit 1
-        fi
+        # info can take 0 or 1 args (submodule dir)
         show_info "$1"
+        ;;
+    "inspect")
+        # inspect can take 0 or 1 args (submodule dir)
+        show_inspect "$1"
         ;;
     "list")
         list_submodules
