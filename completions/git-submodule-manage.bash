@@ -1,7 +1,7 @@
 # Bash completion for git-submodule-manage
 
 _git_submodule_manage() {
-    local subcommands="add remove update reset diff shallow checkout set-url add-remote info list"
+    local subcommands="add remove update reset diff shallow checkout set-url add-remote info inspect list"
     
     # Use standard git completion helper if available
     local subcommand=""
@@ -31,21 +31,47 @@ _git_submodule_manage() {
     local submodules
     submodules="$(git config -f .gitmodules --get-regexp path 2>/dev/null | awk '{print $2}')"
 
-    case "$subcommand" in
-        remove|update|reset|diff|info|shallow)
-             if type __gitcomp >/dev/null 2>&1; then
-                __gitcomp "$submodules --commit"
-             else
-                local suggestions="$submodules"
-                if [[ " remove update " =~ " $subcommand " ]]; then
-                    suggestions="$suggestions --commit"
+    # Internal helper for basename matching
+    _git_submodule_manage_match() {
+        local cur="$1"
+        local candidates="$2"
+        local matches=()
+        local c
+        
+        for c in $candidates; do
+            if [[ "$c" == "$cur"* ]]; then
+                matches+=("$c")
+            elif [[ "$c" != --* ]]; then
+                # Check basename match
+                local base="${c##*/}"
+                if [[ "$base" == "$cur"* ]]; then
+                    matches+=("$c")
                 fi
-                COMPREPLY=( $(compgen -W "$suggestions" -- "${COMP_WORDS[COMP_CWORD]}") )
+            fi
+        done
+        # Sort and unique
+        COMPREPLY=( $(printf "%s\n" "${matches[@]}" | sort -u) )
+    }
+    
+    local cur="${COMP_WORDS[COMP_CWORD]}"
+
+    case "$subcommand" in
+        remove|update|reset|diff|shallow)
+             local suggestions="$submodules"
+             if [[ " remove update " =~ " $subcommand " ]]; then
+                 suggestions="$suggestions --commit"
              fi
+             _git_submodule_manage_match "$cur" "$suggestions"
+            ;;
+        info|inspect)
+             local flags="--all --recursive"
+             if [ "$subcommand" = "inspect" ]; then
+                flags="$flags --fix"
+             fi
+             _git_submodule_manage_match "$cur" "$submodules $flags"
             ;;
         checkout)
             # First arg is branch, second is submodule. 
-            local cur="${COMP_WORDS[COMP_CWORD]}"
             local prev="${COMP_WORDS[COMP_CWORD-1]}"
             
             if [ "$prev" = "checkout" ]; then
@@ -60,22 +86,14 @@ _git_submodule_manage() {
                      COMPREPLY=( $(compgen -W "--commit" -- "$cur") )
                  fi
             else
-                 if type __gitcomp >/dev/null 2>&1; then
-                    __gitcomp "$submodules"
-                 else
-                    COMPREPLY=( $(compgen -W "$submodules" -- "$cur") )
-                 fi
+                 _git_submodule_manage_match "$cur" "$submodules"
             fi
             ;;
         set-url)
             # set-url <url> <submodule>
             local prev="${COMP_WORDS[COMP_CWORD-1]}"
             if [ "$prev" != "set-url" ]; then
-                if type __gitcomp >/dev/null 2>&1; then
-                    __gitcomp "$submodules"
-                else
-                    COMPREPLY=( $(compgen -W "$submodules" -- "${COMP_WORDS[COMP_CWORD]}") )
-                fi
+                 _git_submodule_manage_match "$cur" "$submodules"
             fi
             ;;
         add-remote)
@@ -96,11 +114,7 @@ _git_submodule_manage() {
              relative_idx=$((current_idx - subcmd_idx))
              
              if [ $relative_idx -eq 3 ]; then
-                if type __gitcomp >/dev/null 2>&1; then
-                    __gitcomp "$submodules"
-                else
-                    COMPREPLY=( $(compgen -W "$submodules" -- "${COMP_WORDS[COMP_CWORD]}") )
-                fi
+                  _git_submodule_manage_match "$cur" "$submodules"
              fi
             ;;
     esac

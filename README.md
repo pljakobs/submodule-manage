@@ -12,6 +12,8 @@ Git submodules are powerful but notoriously difficult to manage. Common tasks li
 
 - **Clean Removal:** Properly de-initializes and removes submodules without leaving ghost files in `.git/modules`.
 - **Branch Tracking:** Switch a submodule to a branch and automatically update `.gitmodules` to track it.
+- **Safety Checks:** Prevents accidental data loss by checking for uncommitted changes ("dirty state") before potentially destructive operations.
+- **Dry Run:** Preview operations with `--dry-run` to see exactly what git commands will be executed without changing anything.
 - **Easy Updates:** Update submodules to the latest remote commit without memorizing `git submodule update --remote --merge`.
 - **Shallow Clones:** Convert submodules to shallow clones (depth 1) to save disk space.
 - **Enhanced Status:** View exactly what changed in a submodule (commit logs) instead of just hash differences.
@@ -48,8 +50,16 @@ For autocompletion, source the scripts in `completions/` in your shell configura
 Once installed, you can use it just like a native Git command:
 
 ```bash
-git submodule-manage <command> [arguments]
+git submodule-manage <command> [arguments] [options]
 ```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--commit [msg]` | Automatically add and commit changes to the parent repository. If `msg` is omitted, provides a default message. |
+| `--dry-run`, `-n` | Show what commands would be executed without making any changes. |
+| `--force`, `-f` | Force operations, ignoring safety checks (e.g., overwriting dirty submodules). |
 
 ### Commands
 
@@ -58,13 +68,13 @@ git submodule-manage <command> [arguments]
 **`add <url> <path> [branch]`**
 Adds a new submodule. Optionally configures it to track a specific branch immediately.
 ```bash
-git submodule-manage add https://github.com/foo/bar libs/bar main
+git submodule-manage add https://github.com/foo/bar libs/bar main --commit
 ```
 
 **`remove <path>`**
 The "missing" git command. Cleanly removes a submodule, de-initializes it, removes the git config, and deletes the directory.
 ```bash
-git submodule-manage remove libs/bar
+git submodule-manage remove libs/bar --force
 ```
 
 #### Daily Workflow
@@ -72,7 +82,7 @@ git submodule-manage remove libs/bar
 **`update <path>`**
 Updates the submodule to the latest commit on the remote branch it is tracking.
 ```bash
-git submodule-manage update libs/bar
+git submodule-manage update libs/bar --dry-run
 ```
 
 **`checkout <branch> <path>`**
@@ -93,6 +103,13 @@ git submodule-manage reset libs/bar
 Shows detailed information about the submodule: current branch, configured remote URL, tracked branch in `.gitmodules`, and status.
 ```bash
 git submodule-manage info libs/bar
+```
+
+**`inspect [path]`**
+Diagnoses issues with a submodule (or all if path is omitted or via `--all`). Run with `--fix` to automatically repair common issues like URL mismatches or uninitialized states.
+```bash
+git submodule-manage inspect --all
+git submodule-manage inspect libs/bar --fix
 ```
 
 **`diff <path>`**
