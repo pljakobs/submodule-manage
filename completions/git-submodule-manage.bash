@@ -1,7 +1,7 @@
 # Bash completion for git-submodule-manage
 
 _git_submodule_manage() {
-    local subcommands="add remove update reset diff shallow checkout set-url add-remote info inspect list"
+    local subcommands="add remove update reset diff shallow checkout remote info inspect list"
     
     # Use standard git completion helper if available
     local subcommand=""
@@ -89,33 +89,58 @@ _git_submodule_manage() {
                  _git_submodule_manage_match "$cur" "$submodules"
             fi
             ;;
-        set-url)
-            # set-url <url> <submodule>
+        remote)
+            # remote <subcommand>
+            # remote add <name> <url> <submodule>
+            # remote remove <name> <submodule>
+            # remote rename <old> <new> <submodule>
+            # remote set-url <name> <url> <submodule>
+            # remote <submodule>
+            
+            local remote_subcommands="add remove rm rename set-url get-url"
             local prev="${COMP_WORDS[COMP_CWORD-1]}"
-            if [ "$prev" != "set-url" ]; then
-                 _git_submodule_manage_match "$cur" "$submodules"
+            local cur="${COMP_WORDS[COMP_CWORD]}"
+            
+            if [ "$prev" = "remote" ]; then
+                 if type __gitcomp >/dev/null 2>&1; then
+                    __gitcomp "$remote_subcommands $submodules"
+                 else
+                    COMPREPLY=( $(compgen -W "$remote_subcommands $submodules" -- "$cur") )
+                 fi
+                 return
             fi
-            ;;
-        add-remote)
-            # add-remote <name> <url> <submodule>
-            local prev="${COMP_WORDS[COMP_CWORD-1]}"
-            # Heuristic: if prev starts with http or git@, next is likely submodule
-            # Or if word index > X
-             subcmd_idx=0
-             for ((i=0; i < ${#COMP_WORDS[@]}; i++)); do
-                if [ "${COMP_WORDS[i]}" = "add-remote" ]; then
-                    subcmd_idx=$i
+            
+            # Simple heuristic:
+            # If current word looks like a submodule, suggest submodules
+            # If previous was add/remove/etc, check context.
+            
+            # Find which remote subcommand was used
+            local rem_cmd=""
+            for word in "${COMP_WORDS[@]}"; do
+                if [[ " $remote_subcommands " =~ " $word " ]]; then
+                    rem_cmd="$word"
                     break
                 fi
-             done
-             
-             # Name is idx+1, URL is idx+2, Submodule is idx+3
-             current_idx=$COMP_CWORD
-             relative_idx=$((current_idx - subcmd_idx))
-             
-             if [ $relative_idx -eq 3 ]; then
-                  _git_submodule_manage_match "$cur" "$submodules"
-             fi
+            done
+            
+            if [ -z "$rem_cmd" ]; then
+                # Just remote <submodule> ?
+                _git_submodule_manage_match "$cur" "$submodules --verbose -v"
+            else
+                # We are inside remote <subcmd> ...
+                case "$rem_cmd" in
+                    add) # name url submodule
+                        # hard to track args index without more logic
+                         _git_submodule_manage_match "$cur" "$submodules"
+                        ;;
+                    remove|rm) # name submodule
+                         _git_submodule_manage_match "$cur" "$submodules"
+                        ;;
+                    *) 
+                         _git_submodule_manage_match "$cur" "$submodules"
+                        ;;
+                esac
+            fi
             ;;
     esac
 }

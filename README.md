@@ -124,10 +124,13 @@ Converts an existing submodule to a shallow clone to save space.
 git submodule-manage shallow libs/bar 1
 ```
 
-**`set-url <url> <path>`**
-Changes the origin URL of a submodule and syncs the configuration.
+**`remote <subcommand> ... <path>`**
+Manage remotes for the submodule. Supports `add`, `remove`, `rename`, `set-url` and list (`-v`).
+Updates `.gitmodules` automatically when setting the URL for the `origin` remote.
 ```bash
-git submodule-manage set-url https://new-host.com/repo.git libs/bar
+git submodule-manage remote -v libs/bar
+git submodule-manage remote add upstream https://github.com/original/repo.git libs/bar
+git submodule-manage remote set-url origin https://new-host.com/repo.git libs/bar
 ```
 
 **`list`**
