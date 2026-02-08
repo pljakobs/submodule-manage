@@ -11,7 +11,7 @@ end
 
 # Register the submodule-manage command with git (if not already done by standard completions)
 
-set -l subcommands add remove update reset diff shallow checkout set-url add-remote info inspect list
+set -l subcommands add remove update reset diff shallow checkout remote info inspect list
 
 # Complete subcommands - only show if no subcommand used yet
 complete -f -c git -n '__fish_git_using_command submodule-manage; and not __fish_seen_subcommand_from $subcommands' -a "$subcommands"
@@ -27,13 +27,20 @@ complete -f -c git -n '__fish_git_using_command submodule-manage; and __fish_see
 complete -f -c git -n '__fish_git_using_command submodule-manage; and __fish_seen_subcommand_from inspect' -l fix -d "Attempt to fix issues"
 
 # Add --commit flag for modifying commands
-set -l modifying_cmds add remove update checkout set-url
+set -l modifying_cmds add remove update checkout remote
 complete -f -c git -n "__fish_git_using_command submodule-manage; and __fish_seen_subcommand_from $modifying_cmds" -l commit -d "Automatically commit changes"
 
 # checkout <branch> <submodule>
 # Argument 1 is branch (arbitrary string or git refs?), Argument 2 is submodule
 # We complete submodule if we have at least 1 token after checkout
 complete -f -c git -n '__fish_git_using_command submodule-manage; and __fish_seen_subcommand_from checkout; and __fish_is_nth_token 4' -a "(__fish_git_submodule_manage_submodules)"
+
+# remote command text completions
+complete -f -c git -n '__fish_git_using_command submodule-manage; and __fish_seen_subcommand_from remote' -a "add remove rename set-url get-url"
+# We also want to complete submodules for remote command, but it's tricky because args position varies.
+# For now, just offering submodule completion if 'remote' is present is better than nothing.
+complete -f -c git -n '__fish_git_using_command submodule-manage; and __fish_seen_subcommand_from remote' -a "(__fish_git_submodule_manage_submodules)"
+
 
 # set-url <url> <submodule>
 # url is token 3, submodule is token 4

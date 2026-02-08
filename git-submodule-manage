@@ -84,8 +84,7 @@ COMMANDS:
     diff <submodule-dir>                  Show commit summary between current and recorded state
     shallow <submodule-dir> <depth>       Convert submodule to shallow clone
     checkout <branch> <submodule-dir>     Switch submodule to specified branch
-    set-url <url> <submodule-dir>         Change the origin URL of submodule
-    add-remote <name> <url> <submodule>   Add additional remote to submodule
+    remote <subcommand> ... <submodule>   Manage remotes (add, remove, rename, set-url, list)
     info [submodule-dir]                  Show submodule information
     inspect [submodule-dir]               Inspect submodules for issues (use --fix to repair)
     list                                  List all submodules
@@ -327,67 +326,155 @@ checkout_branch() {
     commit_changes "Update $subdir to branch $branch" "$subdir" .gitmodules
 }
 
-set_url() {
-    local url="$1"
-    local subdir="$2"
-    
-    echo "Setting URL for submodule '$subdir' to '$url'"
-    
-    validate_submodule "$subdir"
-    check_dirty "$subdir"
-    
-    # Get the actual submodule name
-    local submodule_name=$(get_submodule_name "$subdir")
-    
-    # Update .gitmodules
-    echo "Updating .gitmodules..."
-    run_cmd "git config -f .gitmodules \"submodule.$submodule_name.url\" \"$url\""
-    
-    # Update submodule's origin
-    echo "Updating submodule's remote origin..."
-    cd "$subdir"
-    run_cmd "git remote set-url origin \"$url\""
-    cd - > /dev/null
-    
-    # Sync the changes
-    echo "Syncing submodule..."
-    run_cmd "git submodule sync \"$subdir\""
-    
-    if [ "$DRY_RUN" = false ]; then
-         echo "✅ Successfully updated URL for '$subdir'"
-    fi
-    commit_changes "Update $subdir URL to $url" .gitmodules
-}
-
-add_remote() {
+remote_add() {
     local name="$1"
     local url="$2"
     local subdir="$3"
     
-    echo "Adding remote '$name' with URL '$url' to submodule '$subdir'"
-    
+    if [ -z "$subdir" ]; then echo "Error: Missing submodule directory"; exit 1; fi
     validate_submodule "$subdir"
     
+    echo "Adding remote '$name' with URL '$url' to submodule '$subdir'"
+    
     cd "$subdir"
-    
-    # Check if remote already exists
     if git remote get-url "$name" > /dev/null 2>&1; then
-        echo "Remote '$name' already exists. Updating URL..."
-        run_cmd "git remote set-url \"$name\" \"$url\""
+        echo "Remote '$name' already exists."
     else
-        echo "Adding new remote '$name'..."
         run_cmd "git remote add \"$name\" \"$url\""
+        run_cmd "git fetch \"$name\""
     fi
+     cd - > /dev/null
+}
+
+remote_remove() {
+    local name="$1"
+    local subdir="$2"
     
-    # Fetch from new remote
-    echo "Fetching from remote '$name'..."
-    run_cmd "git fetch \"$name\""
+    if [ -z "$subdir" ]; then echo "Error: Missing submodule directory"; exit 1; fi
+    validate_submodule "$subdir"
     
+    echo "Removing remote '$name' from submodule '$subdir'"
+    
+    cd "$subdir"
+    run_cmd "git remote remove \"$name\""
     cd - > /dev/null
+}
+
+remote_rename() {
+    local old="$1"
+    local new="$2"
+    local subdir="$3"
     
-    if [ "$DRY_RUN" = false ]; then
-         echo "✅ Successfully added/updated remote '$name' for '$subdir'"
+    if [ -z "$subdir" ]; then echo "Error: Missing submodule directory"; exit 1; fi
+    validate_submodule "$subdir"
+    
+    echo "Renaming remote '$old' to '$new' in submodule '$subdir'"
+    
+    cd "$subdir"
+    run_cmd "git remote rename \"$old\" \"$new\""
+    cd - > /dev/null
+}
+
+remote_set_url() {
+    local name="$1"
+    local url="$2"
+    local subdir="$3"
+    
+    if [ -z "$subdir" ]; then echo "Error: Missing submodule directory"; exit 1; fi
+    validate_submodule "$subdir"
+    check_dirty "$subdir"
+    
+    echo "Setting URL for remote '$name' in submodule '$subdir' to '$url'"
+    
+    if [ "$name" = "origin" ]; then
+        # If origin, we also update .gitmodules
+        local submodule_name=$(get_submodule_name "$subdir")
+        echo "Updating .gitmodules..."
+        run_cmd "git config -f .gitmodules \"submodule.$submodule_name.url\" \"$url\""
+        
+        echo "Updating submodule remote 'origin'..."
+        cd "$subdir"
+        run_cmd "git remote set-url origin \"$url\""
+        cd - > /dev/null
+        
+        echo "Syncing submodule..."
+        run_cmd "git submodule sync \"$subdir\""
+        
+        commit_changes "Update $subdir URL to $url" .gitmodules
+    else
+        # Just update the remote in the submodule
+        cd "$subdir"
+        run_cmd "git remote set-url \"$name\" \"$url\""
+        cd - > /dev/null
     fi
+}
+
+remote_list() {
+    local subdir="$1"
+    local verbose="$2"
+    
+    if [ -z "$subdir" ]; then echo "Error: Missing submodule directory"; exit 1; fi
+    validate_submodule "$subdir"
+    
+    echo "Remotes for submodule '$subdir':"
+    cd "$subdir"
+    if [ "$verbose" = "true" ]; then
+        git remote -v
+    else
+        git remote
+    fi
+    cd - > /dev/null
+}
+
+cmd_remote() {
+    local verbose=false
+    if [ "$1" = "-v" ] || [ "$1" = "--verbose" ]; then
+        verbose=true
+        shift
+    fi
+    
+    local subcommand="$1"
+    shift
+    
+    case "$subcommand" in
+        add)
+             if [ $# -lt 3 ]; then
+                 echo "Error: remote add requires name, url, and submodule directory"
+                 exit 1
+             fi
+             remote_add "$1" "$2" "$3"
+             ;;
+        remove|rm)
+             if [ $# -lt 2 ]; then
+                 echo "Error: remote remove requires name and submodule directory"
+                 exit 1
+             fi
+             remote_remove "$1" "$2"
+             ;;
+        rename)
+             if [ $# -lt 3 ]; then
+                 echo "Error: remote rename requires old-name, new-name, and submodule directory"
+                 exit 1
+             fi
+             remote_rename "$1" "$2" "$3"
+             ;;
+        set-url)
+             if [ $# -lt 3 ]; then
+                 echo "Error: remote set-url requires name, url, and submodule directory"
+                 exit 1
+             fi
+             remote_set_url "$1" "$2" "$3"
+             ;;
+        *)
+             # Assume subcommand is actually the submodule directory (list command)
+             if [ -n "$subcommand" ]; then
+                 remote_list "$subcommand" "$verbose"
+             else
+                 echo "Error: Submodule directory required"
+                 exit 1
+             fi
+             ;;
+    esac
 }
 
 show_info() {
@@ -737,21 +824,8 @@ case "$COMMAND" in
         fi
         checkout_branch "$1" "$2"
         ;;
-    "set-url")
-        if [ $# -lt 2 ]; then
-            echo "Error: set-url requires URL and submodule directory"
-            echo "Usage: git submodule-manage set-url <url> <submodule-dir> [options]"
-            exit 1
-        fi
-        set_url "$1" "$2"
-        ;;
-    "add-remote")
-        if [ $# -lt 3 ]; then
-            echo "Error: add-remote requires name, URL, and submodule directory"
-            echo "Usage: git submodule-manage add-remote <name> <url> <submodule-dir> [options]"
-            exit 1
-        fi
-        add_remote "$1" "$2" "$3"
+    "remote")
+        cmd_remote "$@"
         ;;
     "info")
         # info can take 0 or 1 args (submodule dir)
